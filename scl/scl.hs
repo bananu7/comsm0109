@@ -116,9 +116,8 @@ pStmt =  try (VarStmt <$> pVarDecl)
      <|> try (pCall CallStmt)
      <|> try (If <$> (pSymbol "if" *>) (pParens pExpr)
                  <*> (pBrackets pStmt)
-                 <*> (many $ (,) <$> (pBrackets pExpr) <*> (pBrackets pStmt))
-                 <*> option Nothing (pure Nothing))
-     <|> Block <$> pStmt `sepEndBy` (pSymbol ";")
+                 <*> try (many $ (pSymbol "else if" *>) $ (,) <$> (pParens pExpr) <*> (pBrackets pStmt))
+                 <*> (option Nothing (Just <$> (pSymbol "else" *>) (pBrackets pStmt))))
 
 -- data VarDecl = VarDecl String Ty Expr deriving Show
 
