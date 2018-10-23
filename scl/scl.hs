@@ -1,3 +1,4 @@
+import Data.List
 import Text.Megaparsec hiding (some, many)
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer
@@ -19,7 +20,7 @@ data Expr = Lit Int
           | CallExpr String [Expr]
           deriving Show
 
-data Ptys = Tint deriving Show
+data Ptys = Tint | Tfloat | Tbool deriving Show
 
 data Ty = Pty Ptys
         | Pointer Ty
@@ -102,27 +103,91 @@ pExpr = makeExprParser term ops
           , [ InfixL (Binop And <$ pSymbol "&&")
             , InfixL (Binop Or  <$ pSymbol "||") ] ]
 
+pPty :: Parser Ptys
+pPty =  try (Tint <$ pSymbol "int")
+    <|> try (Tfloat <$ pSymbol "float")
+    <|> Tbool <$ pSymbol "bool"
+
 pTy :: Parser Ty
-pTy = Pty Tint <$ pSymbol "int"
+pTy =  Pty <$> pPty
+   <|> (UserTy <$> pIdent) 
 
 pVarDecl :: Parser VarDecl
 pVarDecl = VarDecl <$> (pSymbol "let" *>) pIdent
                    <*> (pSymbol ":" *>) pTy
                    <*> (pSymbol "=" *>) pExpr
 
+p1Stmt :: Parser Stmt
+p1Stmt =  try (VarStmt <$> pVarDecl)
+      <|> try (Return <$> (pSymbol "return" *>) (option Nothing (Just <$> pExpr)))
+      <|> try (pCall CallStmt)
+      <|> (If <$> (pSymbol "if" *>) (pParens pExpr)
+              <*> (pBrackets pStmt)
+              <*> try (many $ (pSymbol "else if" *>) $ (,) <$> (pParens pExpr) <*> (pBrackets pStmt))
+              <*> (option Nothing (Just <$> (pSymbol "else" *>) (pBrackets pStmt))))
+
 pStmt :: Parser Stmt
-pStmt =  try (VarStmt <$> pVarDecl)
-     <|> try (Return <$> (pSymbol "return" *>) (option Nothing (Just <$> pExpr)))
-     <|> try (pCall CallStmt)
-     <|> try (If <$> (pSymbol "if" *>) (pParens pExpr)
-                 <*> (pBrackets pStmt)
-                 <*> try (many $ (pSymbol "else if" *>) $ (,) <$> (pParens pExpr) <*> (pBrackets pStmt))
-                 <*> (option Nothing (Just <$> (pSymbol "else" *>) (pBrackets pStmt))))
+pStmt = Block <$> p1Stmt `sepEndBy` (pSymbol ";")
 
--- data VarDecl = VarDecl String Ty Expr deriving Show
+pFnDecl :: Parser FnDecl
+pFnDecl = FnDecl <$> (pSymbol "fn" *>) pIdent <*> (pParens pParams) <*> (pSymbol ":" *>) pTy <*> ((:[]) <$> pStmt) where
+  pParams :: Parser [(String, Ty)]
+  pParams = ((,) <$> pIdent <*> (pSymbol ":" *>) pTy) `sepBy` (pSymbol ",")
 
--- data Stmt = VarStmt VarDecl
---           | Return (Maybe Expr)
---           | CallStmt String [Expr]
---           | If Expr Stmt [(Expr, Stmt)] (Maybe Stmt)
---           | Block [Stmt]
+-- data FnDecl = FnDecl String [(String, Ty)] Ty [Stmt] deriving Show
+
+-- type Module = [Either FnDecl VarDecl]
+
+prettyShowUnops :: Unops -> String
+prettyShowUnops Neg = "-"
+prettyShowUnops Not = "!"
+prettyShowUnops Deref = "*"
+
+prettyShowBinops :: Binops -> String
+prettyShowBinops Add = "+"
+prettyShowBinops Sub = "-"
+prettyShowBinops Mul = "*"
+prettyShowBinops Div = "/"
+prettyShowBinops Euc = "%"
+prettyShowBinops And = "&&"
+prettyShowBinops Or  = "||"
+prettyShowBinops Lshift = "<<"
+prettyShowBinops Rshift = ">>"
+prettyShowBinops Eq  = "=="
+prettyShowBinops Neq = "!="
+prettyShowBinops Gt  = ">"
+prettyShowBinops Lt  = "<"
+prettyShowBinops Gte = ">="
+prettyShowBinops Lte = "<="
+
+prettyShowExpr :: Expr -> String
+prettyShowExpr (Lit x) = show x
+prettyShowExpr (Ident x) = x
+prettyShowExpr (Unop PoInc ex) = "(" ++ prettyShowExpr ex ++ ")++"
+prettyShowExpr (Unop PoDec ex) = "(" ++ prettyShowExpr ex ++ ")--"
+prettyShowExpr (Unop PreInc ex) = "++(" ++ prettyShowExpr ex ++ ")"
+prettyShowExpr (Unop PreDec ex) = "++(" ++ prettyShowExpr ex ++ ")"
+prettyShowExpr (Unop op ex) = prettyShowUnops op ++ "(" ++ prettyShowExpr ex ++ ")"
+prettyShowExpr (Binop op lhs rhs) = prettyShowExpr lhs ++ " " ++ prettyShowBinops op ++ " " ++ prettyShowExpr rhs
+prettyShowExpr (CallExpr f args) = f ++ "(" ++ (intercalate "," (fmap prettyShowExpr args)) ++ ")"
+
+prettyShowTy :: Ty -> String
+prettyShowTy (Pty Tint) = "int"
+prettyShowTy (Pointer ty) = prettyShowTy ty ++ "*"
+prettyShowTy (UserTy s) = s
+
+prettyShowVarDecl (VarDecl n ty val) = "let " ++ n ++ " : " ++ (prettyShowTy ty) ++ " = " ++ (prettyShowExpr val)
+
+prettyShowStmt :: Stmt -> String
+prettyShowStmt (VarStmt decl) = prettyShowVarDecl decl
+prettyShowStmt (Return val) = "return" ++ (maybe "" ((" " ++) . prettyShowExpr) val) ++ ";"
+prettyShowStmt (CallStmt f args) = f ++ "(" ++ (intercalate "," (fmap prettyShowExpr args)) ++ ")"
+prettyShowStmt (If cond then1 elses elsesEnd) =
+  "if (" ++ (prettyShowExpr cond) ++ ") {\n" ++
+  (prettyShowStmt then1) ++
+  "\n}" ++
+  (foldr (++) "" (prettyShowElseIf <$> elses)) ++ 
+  (maybe "" ((" else {\n" ++) . (++ "\n}") . prettyShowStmt) elsesEnd)
+    where
+      prettyShowElseIf (cond, then2) = " else if (" ++ (prettyShowExpr cond) ++ ") {\n" ++ (prettyShowStmt then2) ++ "\n}"
+prettyShowStmt (Block sts) = intercalate ";\n" (fmap prettyShowStmt sts)
